@@ -114,6 +114,17 @@ export function useDockerfiles() {
   });
 }
 
+export function useBuildDockerfile() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: api.buildDockerfile,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['images'] });
+    },
+  });
+}
+
 export function useHealth() {
   return useQuery({
     queryKey: ['health'],

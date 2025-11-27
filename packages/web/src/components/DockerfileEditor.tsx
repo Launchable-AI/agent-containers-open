@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { Save, Trash2, Plus, FileCode, Loader2 } from 'lucide-react';
-import { useDockerfiles } from '../hooks/useContainers';
+import { Save, Trash2, Plus, FileCode, Loader2, Hammer } from 'lucide-react';
+import { useDockerfiles, useBuildDockerfile } from '../hooks/useContainers';
 import * as api from '../api/client';
 
 const DEFAULT_DOCKERFILE = `FROM ubuntu:24.04
@@ -33,8 +33,10 @@ export function DockerfileEditor() {
   const [isCreating, setIsCreating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [buildMessage, setBuildMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { data: files, refetch } = useDockerfiles();
+  const buildMutation = useBuildDockerfile();
 
   useEffect(() => {
     if (selectedFile) {
@@ -86,6 +88,20 @@ export function DockerfileEditor() {
       console.error('Failed to delete:', error);
     }
     setIsDeleting(false);
+  };
+
+  const handleBuild = async () => {
+    if (!selectedFile) return;
+    setBuildMessage(null);
+
+    try {
+      const result = await buildMutation.mutateAsync(selectedFile);
+      setBuildMessage({ type: 'success', text: `Image built: ${result.tag}` });
+      setTimeout(() => setBuildMessage(null), 5000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Build failed';
+      setBuildMessage({ type: 'error', text: message });
+    }
   };
 
   return (
@@ -157,6 +173,19 @@ export function DockerfileEditor() {
                     Save
                   </button>
                   <button
+                    onClick={handleBuild}
+                    disabled={buildMutation.isPending}
+                    className="flex items-center gap-1 rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+                    title="Build image from this Dockerfile"
+                  >
+                    {buildMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Hammer className="h-4 w-4" />
+                    )}
+                    Build
+                  </button>
+                  <button
                     onClick={handleDelete}
                     disabled={isDeleting}
                     className="flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
@@ -174,7 +203,19 @@ export function DockerfileEditor() {
         </div>
       </div>
 
-      <div className="h-96">
+      {buildMessage && (
+        <div
+          className={`px-4 py-2 text-sm ${
+            buildMessage.type === 'success'
+              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+          }`}
+        >
+          {buildMessage.text}
+        </div>
+      )}
+
+      <div className="h-[calc(100vh-400px)] min-h-[400px]">
         <Editor
           height="100%"
           defaultLanguage="dockerfile"

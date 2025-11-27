@@ -189,6 +189,10 @@ export async function deleteDockerfile(name: string): Promise<void> {
   await fetchAPI(`/dockerfiles/${name}`, { method: 'DELETE' });
 }
 
+export async function buildDockerfile(name: string): Promise<{ tag: string }> {
+  return fetchAPI(`/dockerfiles/${name}/build`, { method: 'POST' });
+}
+
 // Health
 export async function checkHealth(): Promise<{ status: string; docker: string }> {
   return fetchAPI('/health');
