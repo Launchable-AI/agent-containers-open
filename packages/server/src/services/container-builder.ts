@@ -17,7 +17,7 @@ export interface ContainerBuildResult {
 }
 
 export async function buildAndCreateContainer(request: CreateContainerRequest): Promise<ContainerBuildResult> {
-  const { name, image, dockerfile, volumes, env } = request;
+  const { name, image, dockerfile, volumes, ports, env } = request;
 
   // Generate SSH keypair using ssh-keygen (creates the private key file directly)
   const { publicKey } = await generateSshKeyPair(name);
@@ -49,6 +49,7 @@ export async function buildAndCreateContainer(request: CreateContainerRequest): 
     image: imageName,
     sshPort,
     volumes,
+    ports,
     env,
   });
 

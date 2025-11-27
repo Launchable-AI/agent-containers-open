@@ -50,4 +50,28 @@ volumes.get('/:name/files', async (c) => {
   }
 });
 
+// Upload file to volume
+volumes.post('/:name/upload', async (c) => {
+  const volumeName = c.req.param('name');
+
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get('file');
+
+    if (!file || !(file instanceof File)) {
+      return c.json({ error: 'No file provided' }, 400);
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    await dockerService.uploadFileToVolume(volumeName, file.name, buffer);
+
+    return c.json({ success: true, fileName: file.name });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: message }, 500);
+  }
+});
+
 export default volumes;

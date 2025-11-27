@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
-import { Save, Trash2, Plus, FileCode, Loader2, Hammer } from 'lucide-react';
-import { useDockerfiles, useBuildDockerfile } from '../hooks/useContainers';
+import { Save, Trash2, Plus, FileCode, Loader2, Hammer, X } from 'lucide-react';
+import { useDockerfiles } from '../hooks/useContainers';
 import * as api from '../api/client';
 
 const DEFAULT_DOCKERFILE = `FROM ubuntu:24.04
@@ -33,10 +33,13 @@ export function DockerfileEditor() {
   const [isCreating, setIsCreating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [buildMessage, setBuildMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isBuilding, setIsBuilding] = useState(false);
+  const [buildLogs, setBuildLogs] = useState<string[]>([]);
+  const [showBuildModal, setShowBuildModal] = useState(false);
+  const [buildResult, setBuildResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   const { data: files, refetch } = useDockerfiles();
-  const buildMutation = useBuildDockerfile();
 
   useEffect(() => {
     if (selectedFile) {
@@ -90,17 +93,38 @@ export function DockerfileEditor() {
     setIsDeleting(false);
   };
 
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [buildLogs]);
+
   const handleBuild = async () => {
     if (!selectedFile) return;
-    setBuildMessage(null);
+
+    setIsBuilding(true);
+    setBuildLogs([]);
+    setBuildResult(null);
+    setShowBuildModal(true);
 
     try {
-      const result = await buildMutation.mutateAsync(selectedFile);
-      setBuildMessage({ type: 'success', text: `Image built: ${result.tag}` });
-      setTimeout(() => setBuildMessage(null), 5000);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Build failed';
-      setBuildMessage({ type: 'error', text: message });
+      await api.buildDockerfile(
+        selectedFile,
+        (log) => {
+          setBuildLogs((prev) => [...prev, log]);
+        },
+        (tag) => {
+          setBuildResult({ type: 'success', message: `Image built successfully: ${tag}` });
+          setIsBuilding(false);
+        },
+        (error) => {
+          setBuildResult({ type: 'error', message: error });
+          setIsBuilding(false);
+        }
+      );
+    } catch {
+      setIsBuilding(false);
     }
   };
 
@@ -174,11 +198,11 @@ export function DockerfileEditor() {
                   </button>
                   <button
                     onClick={handleBuild}
-                    disabled={buildMutation.isPending}
+                    disabled={isBuilding}
                     className="flex items-center gap-1 rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
                     title="Build image from this Dockerfile"
                   >
-                    {buildMutation.isPending ? (
+                    {isBuilding ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Hammer className="h-4 w-4" />
@@ -203,18 +227,6 @@ export function DockerfileEditor() {
         </div>
       </div>
 
-      {buildMessage && (
-        <div
-          className={`px-4 py-2 text-sm ${
-            buildMessage.type === 'success'
-              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-          }`}
-        >
-          {buildMessage.text}
-        </div>
-      )}
-
       <div className="h-[calc(100vh-400px)] min-h-[400px]">
         <Editor
           height="100%"
@@ -231,6 +243,60 @@ export function DockerfileEditor() {
           }}
         />
       </div>
+
+      {/* Build Log Modal */}
+      {showBuildModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-3xl mx-4 rounded-lg bg-gray-900 shadow-xl flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+              <h3 className="font-semibold text-white flex items-center gap-2">
+                <Hammer className="h-5 w-5" />
+                Building Image
+                {isBuilding && <Loader2 className="h-4 w-4 animate-spin ml-2" />}
+              </h3>
+              <button
+                onClick={() => setShowBuildModal(false)}
+                disabled={isBuilding}
+                className="rounded p-1 text-gray-400 hover:bg-gray-800 hover:text-white disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4 font-mono text-sm">
+              <pre className="text-gray-300 whitespace-pre-wrap">
+                {buildLogs.map((log, i) => (
+                  <span key={i}>{log}</span>
+                ))}
+              </pre>
+              <div ref={logsEndRef} />
+            </div>
+
+            {buildResult && (
+              <div
+                className={`px-4 py-3 border-t border-gray-700 ${
+                  buildResult.type === 'success'
+                    ? 'bg-green-900/30 text-green-400'
+                    : 'bg-red-900/30 text-red-400'
+                }`}
+              >
+                {buildResult.message}
+              </div>
+            )}
+
+            {!isBuilding && (
+              <div className="px-4 py-3 border-t border-gray-700 flex justify-end">
+                <button
+                  onClick={() => setShowBuildModal(false)}
+                  className="rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

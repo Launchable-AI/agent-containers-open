@@ -1,12 +1,16 @@
-import { useState, useMemo } from 'react';
-import { Plus, Trash2, Loader2, HardDrive, Box } from 'lucide-react';
+import { useState, useMemo, useRef } from 'react';
+import { Plus, Trash2, Loader2, HardDrive, Box, Upload } from 'lucide-react';
 import { useVolumes, useCreateVolume, useRemoveVolume, useContainers } from '../hooks/useContainers';
+import * as api from '../api/client';
 
 export function VolumeManager() {
   const [newVolumeName, setNewVolumeName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [uploadingVolume, setUploadingVolume] = useState<string | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<{ volume: string; type: 'success' | 'error'; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: volumes, isLoading } = useVolumes();
+  const { data: volumes, isLoading, refetch } = useVolumes();
   const { data: containers } = useContainers();
   const createMutation = useCreateVolume();
   const removeMutation = useRemoveVolume();
@@ -41,6 +45,30 @@ export function VolumeManager() {
     }
   };
 
+  const handleUploadClick = (volumeName: string) => {
+    setUploadingVolume(volumeName);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !uploadingVolume) return;
+
+    try {
+      await api.uploadFileToVolume(uploadingVolume, file);
+      setUploadMessage({ volume: uploadingVolume, type: 'success', text: `Uploaded: ${file.name}` });
+      setTimeout(() => setUploadMessage(null), 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      setUploadMessage({ volume: uploadingVolume, type: 'error', text: message });
+    } finally {
+      setUploadingVolume(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -51,6 +79,14 @@ export function VolumeManager() {
 
   return (
     <div className="rounded-lg border bg-white p-4 dark:bg-gray-800">
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileSelect}
+      />
+
       <div className="flex items-center justify-between mb-4">
         <h3 className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
           <HardDrive className="h-5 w-5" />
@@ -117,21 +153,43 @@ export function VolumeManager() {
                       {volume.driver}
                     </p>
                   </div>
-                  <button
-                    onClick={() => {
-                      const msg = isInUse
-                        ? `Volume "${volume.name}" is in use by ${usedBy.length} container(s). Delete anyway?`
-                        : `Delete volume "${volume.name}"?`;
-                      if (confirm(msg)) {
-                        removeMutation.mutate(volume.name);
-                      }
-                    }}
-                    disabled={removeMutation.isPending}
-                    className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600 dark:hover:bg-gray-600"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleUploadClick(volume.name)}
+                      disabled={uploadingVolume === volume.name}
+                      className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-blue-600 dark:hover:bg-gray-600"
+                      title="Upload file to volume"
+                    >
+                      {uploadingVolume === volume.name ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="h-4 w-4" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const msg = isInUse
+                          ? `Volume "${volume.name}" is in use by ${usedBy.length} container(s). Delete anyway?`
+                          : `Delete volume "${volume.name}"?`;
+                        if (confirm(msg)) {
+                          removeMutation.mutate(volume.name);
+                        }
+                      }}
+                      disabled={removeMutation.isPending}
+                      className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-red-600 dark:hover:bg-gray-600"
+                      title="Delete volume"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
+                {uploadMessage?.volume === volume.name && (
+                  <p className={`mt-1 text-xs ${
+                    uploadMessage.type === 'success' ? 'text-green-600' : 'text-red-600'
+                  }`}>
+                    {uploadMessage.text}
+                  </p>
+                )}
                 {isInUse && (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {usedBy.map((container) => (

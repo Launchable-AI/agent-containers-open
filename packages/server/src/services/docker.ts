@@ -1,5 +1,6 @@
 import Docker from 'dockerode';
 import type { ContainerInfo, VolumeInfo, ImageInfo } from '../types/index.js';
+import { getConfig } from './config.js';
 
 const docker = new Docker();
 
@@ -22,6 +23,7 @@ export async function listContainers(): Promise<ContainerInfo[]> {
       sshPort,
       sshCommand: sshPort ? `ssh -p ${sshPort} root@localhost` : null,
       volumes: extractVolumes(container.Mounts),
+      ports: extractPorts(container.Ports),
       createdAt: new Date(container.Created * 1000).toISOString(),
     };
   });
@@ -42,6 +44,7 @@ export async function getContainer(id: string): Promise<ContainerInfo | null> {
       sshPort,
       sshCommand: sshPort ? `ssh -p ${sshPort} root@localhost` : null,
       volumes: extractVolumesFromInspect(info.Mounts),
+      ports: extractPortsFromInspect(info.NetworkSettings.Ports),
       createdAt: info.Created,
     };
   } catch {
@@ -54,12 +57,30 @@ export async function createContainer(options: {
   image: string;
   sshPort: number;
   volumes?: Array<{ name: string; mountPath: string }>;
+  ports?: Array<{ container: number; host: number }>;
   env?: Record<string, string>;
 }): Promise<Docker.Container> {
-  const { name, image, sshPort, volumes = [], env = {} } = options;
+  const { name, image, sshPort, volumes = [], ports = [], env = {} } = options;
 
-  const binds = volumes.map((v) => `${v.name}:${v.mountPath}`);
+  // Convert volume names to local directory paths for bind mounts
+  const binds: string[] = [];
+  for (const v of volumes) {
+    const volumePath = await getVolumePath(v.name);
+    binds.push(`${volumePath}:${v.mountPath}`);
+  }
   const envArray = Object.entries(env).map(([k, v]) => `${k}=${v}`);
+
+  // Build exposed ports and port bindings
+  const exposedPorts: Record<string, object> = { '22/tcp': {} };
+  const portBindings: Record<string, Array<{ HostPort: string }>> = {
+    '22/tcp': [{ HostPort: sshPort.toString() }],
+  };
+
+  for (const port of ports) {
+    const key = `${port.container}/tcp`;
+    exposedPorts[key] = {};
+    portBindings[key] = [{ HostPort: port.host.toString() }];
+  }
 
   const container = await docker.createContainer({
     name,
@@ -67,11 +88,9 @@ export async function createContainer(options: {
     Image: image,
     Labels: { [CONTAINER_LABEL]: 'true' },
     Env: envArray,
-    ExposedPorts: { '22/tcp': {} },
+    ExposedPorts: exposedPorts,
     HostConfig: {
-      PortBindings: {
-        '22/tcp': [{ HostPort: sshPort.toString() }],
-      },
+      PortBindings: portBindings,
       Binds: binds.length > 0 ? binds : undefined,
       RestartPolicy: { Name: 'unless-stopped' },
     },
@@ -121,7 +140,6 @@ export async function pullImage(imageName: string): Promise<void> {
 }
 
 export async function buildImage(dockerfile: string, tag: string): Promise<void> {
-  const { Readable } = await import('stream');
   const tar = await createTarFromDockerfile(dockerfile);
 
   return new Promise((resolve, reject) => {
@@ -142,6 +160,50 @@ export async function buildImage(dockerfile: string, tag: string): Promise<void>
   });
 }
 
+export async function buildImageWithLogs(
+  dockerfile: string,
+  tag: string,
+  onLog: (message: string) => void
+): Promise<void> {
+  const tar = await createTarFromDockerfile(dockerfile);
+
+  return new Promise((resolve, reject) => {
+    docker.buildImage(tar, { t: tag }, (err, stream) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      if (!stream) {
+        reject(new Error('No stream returned from buildImage'));
+        return;
+      }
+
+      stream.on('data', (chunk: Buffer) => {
+        try {
+          const lines = chunk.toString().split('\n').filter(Boolean);
+          for (const line of lines) {
+            const json = JSON.parse(line);
+            if (json.stream) {
+              onLog(json.stream);
+            } else if (json.error) {
+              onLog(`ERROR: ${json.error}`);
+            } else if (json.status) {
+              onLog(`${json.status}${json.progress ? ` ${json.progress}` : ''}`);
+            }
+          }
+        } catch {
+          onLog(chunk.toString());
+        }
+      });
+
+      docker.modem.followProgress(stream, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+}
+
 async function createTarFromDockerfile(dockerfile: string): Promise<NodeJS.ReadableStream> {
   const { pack } = await import('tar-stream');
   const { PassThrough } = await import('stream');
@@ -153,49 +215,112 @@ async function createTarFromDockerfile(dockerfile: string): Promise<NodeJS.Reada
   return tarStream;
 }
 
-export async function listVolumes(): Promise<VolumeInfo[]> {
-  const result = await docker.listVolumes({
-    filters: { label: [CONTAINER_LABEL] },
-  });
+// Volume functions now use local directories instead of Docker volumes
+// This keeps data in the project directory for easy access
 
-  return (result.Volumes || []).map((vol) => ({
-    name: vol.Name,
-    driver: vol.Driver,
-    mountpoint: vol.Mountpoint,
-    createdAt: (vol as { CreatedAt?: string }).CreatedAt || '',
-  }));
+async function getVolumesDir(): Promise<string> {
+  const { join } = await import('path');
+  const config = await getConfig();
+  return join(config.dataDirectory, 'volumes');
+}
+
+export async function listVolumes(): Promise<VolumeInfo[]> {
+  const { readdir, stat, mkdir } = await import('fs/promises');
+  const { join } = await import('path');
+
+  const volumesDir = await getVolumesDir();
+  await mkdir(volumesDir, { recursive: true });
+
+  try {
+    const entries = await readdir(volumesDir, { withFileTypes: true });
+    const volumes: VolumeInfo[] = [];
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const volPath = join(volumesDir, entry.name);
+        const stats = await stat(volPath);
+        volumes.push({
+          name: entry.name,
+          driver: 'local',
+          mountpoint: volPath,
+          createdAt: stats.birthtime.toISOString(),
+        });
+      }
+    }
+
+    return volumes;
+  } catch {
+    return [];
+  }
 }
 
 export async function createVolume(name: string): Promise<void> {
-  await docker.createVolume({
-    Name: name,
-    Labels: { [CONTAINER_LABEL]: 'true' },
-  });
+  const { mkdir } = await import('fs/promises');
+  const { join } = await import('path');
+
+  const volumesDir = await getVolumesDir();
+  const volumePath = join(volumesDir, name);
+  await mkdir(volumePath, { recursive: true });
 }
 
 export async function removeVolume(name: string): Promise<void> {
-  const volume = docker.getVolume(name);
-  await volume.remove();
+  const { rm } = await import('fs/promises');
+  const { join } = await import('path');
+
+  const volumesDir = await getVolumesDir();
+  const volumePath = join(volumesDir, name);
+  await rm(volumePath, { recursive: true });
 }
 
 export async function getVolumeFiles(volumeName: string): Promise<string[]> {
-  // Create a temporary container to list volume contents
-  const container = await docker.createContainer({
-    Image: 'alpine:latest',
-    Cmd: ['find', '/data', '-type', 'f'],
-    HostConfig: {
-      Binds: [`${volumeName}:/data`],
-      AutoRemove: true,
-    },
-  });
+  const { readdir } = await import('fs/promises');
+  const { join } = await import('path');
 
-  await container.start();
-  const result = await container.wait();
-  const logs = await container.logs({ stdout: true, stderr: false });
+  const volumesDir = await getVolumesDir();
+  const volumePath = join(volumesDir, volumeName);
 
-  // Parse output, removing /data prefix
-  const output = logs.toString().replace(/[\x00-\x1F]/g, '');
-  return output.split('\n').filter(Boolean).map((f) => f.replace(/^\/data\/?/, ''));
+  async function listFilesRecursive(dir: string, base: string = ''): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+
+    for (const entry of entries) {
+      const relativePath = base ? `${base}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        files.push(...await listFilesRecursive(join(dir, entry.name), relativePath));
+      } else {
+        files.push(relativePath);
+      }
+    }
+
+    return files;
+  }
+
+  try {
+    return await listFilesRecursive(volumePath);
+  } catch {
+    return [];
+  }
+}
+
+export async function uploadFileToVolume(
+  volumeName: string,
+  fileName: string,
+  fileContent: Buffer
+): Promise<void> {
+  const { writeFile, mkdir } = await import('fs/promises');
+  const { join, dirname } = await import('path');
+
+  const volumesDir = await getVolumesDir();
+  const filePath = join(volumesDir, volumeName, fileName);
+
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, fileContent);
+}
+
+export async function getVolumePath(volumeName: string): Promise<string> {
+  const { join } = await import('path');
+  const volumesDir = await getVolumesDir();
+  return join(volumesDir, volumeName);
 }
 
 export async function testConnection(): Promise<boolean> {
@@ -236,6 +361,32 @@ function extractVolumesFromInspect(mounts: Array<{ Type: string; Name?: string; 
       name: m.Name || '',
       mountPath: m.Destination,
     }));
+}
+
+function extractPorts(ports: Docker.Port[]): Array<{ container: number; host: number }> {
+  return ports
+    .filter((p) => p.PublicPort && p.PrivatePort !== 22) // Exclude SSH port
+    .map((p) => ({
+      container: p.PrivatePort,
+      host: p.PublicPort!,
+    }));
+}
+
+function extractPortsFromInspect(ports: Record<string, Array<{ HostPort: string }> | null>): Array<{ container: number; host: number }> {
+  const result: Array<{ container: number; host: number }> = [];
+
+  for (const [key, bindings] of Object.entries(ports)) {
+    if (!bindings || key === '22/tcp') continue; // Skip SSH port
+
+    const containerPort = parseInt(key.split('/')[0], 10);
+    const hostPort = parseInt(bindings[0]?.HostPort, 10);
+
+    if (containerPort && hostPort) {
+      result.push({ container: containerPort, host: hostPort });
+    }
+  }
+
+  return result;
 }
 
 function mapState(state: string): ContainerInfo['state'] {

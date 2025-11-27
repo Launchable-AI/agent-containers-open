@@ -90,7 +90,7 @@ dockerfiles.delete('/:name', async (c) => {
   }
 });
 
-// Build image from Dockerfile
+// Build image from Dockerfile (with streaming logs)
 dockerfiles.post('/:name/build', async (c) => {
   const name = c.req.param('name');
   const filePath = join(DOCKERFILES_DIR, `${name}.dockerfile`);
@@ -99,9 +99,40 @@ dockerfiles.post('/:name/build', async (c) => {
     const content = await readFile(filePath, 'utf-8');
     const tag = `acm-${name}:latest`;
 
-    await dockerService.buildImage(content, tag);
+    // Set up SSE headers
+    c.header('Content-Type', 'text/event-stream');
+    c.header('Cache-Control', 'no-cache');
+    c.header('Connection', 'keep-alive');
 
-    return c.json({ success: true, tag });
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+
+        const sendEvent = (event: string, data: string) => {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        };
+
+        try {
+          await dockerService.buildImageWithLogs(content, tag, (log) => {
+            sendEvent('log', log);
+          });
+          sendEvent('done', tag);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Build failed';
+          sendEvent('error', message);
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: message }, 500);

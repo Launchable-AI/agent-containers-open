@@ -9,6 +9,10 @@ export const CreateContainerSchema = z.object({
     name: z.string(),
     mountPath: z.string(),
   })).optional(),
+  ports: z.array(z.object({
+    container: z.number().min(1).max(65535),
+    host: z.number().min(1).max(65535),
+  })).optional(),
   env: z.record(z.string()).optional(),
 });
 
@@ -23,6 +27,7 @@ export interface ContainerInfo {
   sshPort: number | null;
   sshCommand: string | null;
   volumes: Array<{ name: string; mountPath: string }>;
+  ports: Array<{ container: number; host: number }>;
   createdAt: string;
 }
 

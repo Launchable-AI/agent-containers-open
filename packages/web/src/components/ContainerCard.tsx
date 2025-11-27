@@ -8,6 +8,7 @@ import {
   Check,
   Download,
   HardDrive,
+  Globe,
 } from 'lucide-react';
 import type { ContainerInfo } from '../api/client';
 import { downloadSshKey } from '../api/client';
@@ -174,6 +175,34 @@ export function ContainerCard({ container }: ContainerCardProps) {
                 className="text-sm text-gray-500 dark:text-gray-400"
               >
                 {vol.name} → {vol.mountPath}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Ports */}
+      {container.ports && container.ports.length > 0 && (
+        <div className="mt-4">
+          <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <Globe className="h-4 w-4" />
+            <span>Ports:</span>
+          </div>
+          <ul className="mt-1 space-y-1">
+            {container.ports.map((port) => (
+              <li
+                key={`${port.host}-${port.container}`}
+                className="text-sm text-gray-500 dark:text-gray-400"
+              >
+                <a
+                  href={`http://localhost:${port.host}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-500 hover:text-blue-600 hover:underline"
+                >
+                  localhost:{port.host}
+                </a>
+                {' → '}container:{port.container}
               </li>
             ))}
           </ul>

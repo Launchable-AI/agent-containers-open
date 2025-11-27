@@ -51,6 +51,7 @@ export interface ContainerInfo {
   sshPort: number | null;
   sshCommand: string | null;
   volumes: Array<{ name: string; mountPath: string }>;
+  ports: Array<{ container: number; host: number }>;
   createdAt: string;
 }
 
@@ -73,6 +74,7 @@ export interface CreateContainerRequest {
   image?: string;
   dockerfile?: string;
   volumes?: Array<{ name: string; mountPath: string }>;
+  ports?: Array<{ container: number; host: number }>;
   env?: Record<string, string>;
 }
 
@@ -169,6 +171,22 @@ export async function getVolumeFiles(name: string): Promise<string[]> {
   return result.files;
 }
 
+export async function uploadFileToVolume(volumeName: string, file: File): Promise<void> {
+  const serverUrl = await discoverServer();
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${serverUrl}/api/volumes/${volumeName}/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+    throw new Error(error.error || 'Upload failed');
+  }
+}
+
 // Dockerfiles
 export async function listDockerfiles(): Promise<string[]> {
   return fetchAPI('/dockerfiles');
@@ -189,8 +207,70 @@ export async function deleteDockerfile(name: string): Promise<void> {
   await fetchAPI(`/dockerfiles/${name}`, { method: 'DELETE' });
 }
 
-export async function buildDockerfile(name: string): Promise<{ tag: string }> {
-  return fetchAPI(`/dockerfiles/${name}/build`, { method: 'POST' });
+export async function buildDockerfile(
+  name: string,
+  onLog: (log: string) => void,
+  onDone: (tag: string) => void,
+  onError: (error: string) => void
+): Promise<void> {
+  const serverUrl = await discoverServer();
+
+  return new Promise((resolve, reject) => {
+    // Use fetch with streaming for SSE
+    fetch(`${serverUrl}/api/dockerfiles/${name}/build`, {
+      method: 'POST',
+    }).then(async (response) => {
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Build failed' }));
+        onError(error.error || 'Build failed');
+        reject(new Error(error.error || 'Build failed'));
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        onError('No response stream');
+        reject(new Error('No response stream'));
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const eventBlock of lines) {
+          const eventMatch = eventBlock.match(/event: (\w+)/);
+          const dataMatch = eventBlock.match(/data: (.+)/);
+
+          if (eventMatch && dataMatch) {
+            const event = eventMatch[1];
+            const data = JSON.parse(dataMatch[1]);
+
+            if (event === 'log') {
+              onLog(data);
+            } else if (event === 'done') {
+              onDone(data);
+              resolve();
+            } else if (event === 'error') {
+              onError(data);
+              reject(new Error(data));
+            }
+          }
+        }
+      }
+      resolve();
+    }).catch((err) => {
+      onError(err.message);
+      reject(err);
+    });
+  });
 }
 
 // Health
@@ -201,6 +281,7 @@ export async function checkHealth(): Promise<{ status: string; docker: string }>
 // Config
 export interface AppConfig {
   sshKeysDisplayPath: string;
+  dataDirectory: string;
 }
 
 export async function getConfig(): Promise<AppConfig> {

@@ -23,6 +23,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [sshKeysPath, setSshKeysPath] = useState('~/.ssh');
   const [customPath, setCustomPath] = useState('');
   const [useCustom, setUseCustom] = useState(false);
+  const [dataDirectory, setDataDirectory] = useState('');
 
   useEffect(() => {
     if (config) {
@@ -34,6 +35,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         setCustomPath(path);
         setUseCustom(true);
       }
+      setDataDirectory(config.dataDirectory || '');
     }
   }, [config]);
 
@@ -63,7 +65,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
   const handleSave = async () => {
     const pathToSave = useCustom ? customPath : sshKeysPath;
-    await updateMutation.mutateAsync({ sshKeysDisplayPath: pathToSave });
+    await updateMutation.mutateAsync({
+      sshKeysDisplayPath: pathToSave,
+      dataDirectory: dataDirectory || undefined,
+    });
     onClose();
   };
 
@@ -177,6 +182,29 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             <code className="text-xs text-gray-800 dark:text-gray-200 font-mono">
               ssh -i {currentPath}/container-name.pem -p 2222 root@localhost
             </code>
+          </div>
+
+          {/* Data Directory */}
+          <div className="pt-4 border-t dark:border-gray-700">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              <FolderOpen className="inline h-4 w-4 mr-1" />
+              Data Directory
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Where volumes, SSH keys, and dockerfiles are stored. Volumes will be stored in subdirectories here for easy host access.
+            </p>
+            <input
+              type="text"
+              value={dataDirectory}
+              onChange={(e) => setDataDirectory(e.target.value)}
+              placeholder="Leave empty for default (project/data)"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white font-mono"
+            />
+            {dataDirectory && (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Volumes path: {dataDirectory}/volumes/
+              </p>
+            )}
           </div>
         </div>
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Plus } from 'lucide-react';
 import { useCreateContainer, useVolumes, useImages } from '../hooks/useContainers';
 
 interface CreateContainerFormProps {
@@ -12,6 +12,9 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
   const [selectedVolumes, setSelectedVolumes] = useState<
     Array<{ name: string; mountPath: string }>
   >([]);
+  const [ports, setPorts] = useState<Array<{ container: number; host: number }>>([]);
+  const [newContainerPort, setNewContainerPort] = useState('');
+  const [newHostPort, setNewHostPort] = useState('');
 
   const createMutation = useCreateContainer();
   const { data: volumes } = useVolumes();
@@ -25,11 +28,26 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
         name,
         image,
         volumes: selectedVolumes.length > 0 ? selectedVolumes : undefined,
+        ports: ports.length > 0 ? ports : undefined,
       });
       onClose();
     } catch (error) {
       console.error('Failed to create container:', error);
     }
+  };
+
+  const addPort = () => {
+    const containerPort = parseInt(newContainerPort, 10);
+    const hostPort = parseInt(newHostPort, 10);
+    if (containerPort && hostPort) {
+      setPorts([...ports, { container: containerPort, host: hostPort }]);
+      setNewContainerPort('');
+      setNewHostPort('');
+    }
+  };
+
+  const removePort = (index: number) => {
+    setPorts(ports.filter((_, i) => i !== index));
   };
 
   // Common base images
@@ -142,6 +160,68 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
                 No volumes available. Create one first.
               </p>
             )}
+          </div>
+
+          {/* Port Mapping */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Port Mapping (for web apps, APIs, etc.)
+            </label>
+
+            {ports.length > 0 && (
+              <ul className="mb-2 space-y-1">
+                {ports.map((port, i) => (
+                  <li
+                    key={i}
+                    className="flex items-center justify-between rounded bg-gray-100 px-3 py-1 text-sm dark:bg-gray-700"
+                  >
+                    <span className="text-gray-700 dark:text-gray-300">
+                      localhost:{port.host} → container:{port.container}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removePort(i)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="flex gap-2 items-center">
+              <input
+                type="number"
+                value={newHostPort}
+                onChange={(e) => setNewHostPort(e.target.value)}
+                placeholder="Host port"
+                min="1"
+                max="65535"
+                className="w-28 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              />
+              <span className="text-gray-500">→</span>
+              <input
+                type="number"
+                value={newContainerPort}
+                onChange={(e) => setNewContainerPort(e.target.value)}
+                placeholder="Container port"
+                min="1"
+                max="65535"
+                className="w-28 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              />
+              <button
+                type="button"
+                onClick={addPort}
+                disabled={!newHostPort || !newContainerPort}
+                className="rounded-md bg-gray-100 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              SSH port (22) is automatically mapped
+            </p>
           </div>
 
           {/* Error message */}
