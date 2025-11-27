@@ -1,42 +1,38 @@
 import { useState } from 'react';
-import { X, Loader2, Plus } from 'lucide-react';
-import { useCreateContainer, useVolumes, useImages } from '../hooks/useContainers';
+import { X, Loader2, Plus, Settings } from 'lucide-react';
+import { useReconfigureContainer, useVolumes } from '../hooks/useContainers';
+import type { ContainerInfo } from '../api/client';
 
-interface CreateContainerFormProps {
+interface ReconfigureModalProps {
+  container: ContainerInfo;
   onClose: () => void;
 }
 
-export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
-  const [name, setName] = useState('');
-  const [image, setImage] = useState('');
+export function ReconfigureModal({ container, onClose }: ReconfigureModalProps) {
   const [selectedVolumes, setSelectedVolumes] = useState<
     Array<{ name: string; mountPath: string }>
-  >([]);
-  const [ports, setPorts] = useState<Array<{ container: number; host: number }>>([]);
+  >(container.volumes);
+  const [ports, setPorts] = useState<Array<{ container: number; host: number }>>(
+    container.ports
+  );
   const [newContainerPort, setNewContainerPort] = useState('');
   const [newHostPort, setNewHostPort] = useState('');
 
-  const createMutation = useCreateContainer();
+  const reconfigureMutation = useReconfigureContainer();
   const { data: volumes } = useVolumes();
-  const { data: images } = useImages();
-
-  // Default to first built image if available, otherwise ubuntu
-  const defaultImage = images?.flatMap((i) => i.repoTags).find((tag) => tag && tag !== '<none>:<none>') || 'ubuntu:24.04';
-  const selectedImage = image || defaultImage;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     try {
-      await createMutation.mutateAsync({
-        name,
-        image: selectedImage,
+      await reconfigureMutation.mutateAsync({
+        id: container.id,
         volumes: selectedVolumes.length > 0 ? selectedVolumes : undefined,
         ports: ports.length > 0 ? ports : undefined,
       });
       onClose();
     } catch (error) {
-      console.error('Failed to create container:', error);
+      console.error('Failed to reconfigure container:', error);
     }
   };
 
@@ -54,20 +50,13 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
     setPorts(ports.filter((_, i) => i !== index));
   };
 
-  // Common base images
-  const commonImages = [
-    'ubuntu:24.04',
-    'ubuntu:22.04',
-    'debian:bookworm',
-    'debian:bullseye',
-  ];
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold dark:text-white">
-            Create Container
+          <h2 className="text-xl font-semibold dark:text-white flex items-center gap-2">
+            <Settings className="h-5 w-5" />
+            Reconfigure Container
           </h2>
           <button
             onClick={onClose}
@@ -77,62 +66,20 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
           </button>
         </div>
 
+        <div className="mb-4 rounded-md bg-yellow-50 p-3 text-sm text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-200">
+          This will recreate the container with new settings. The container will be stopped and restarted with a new SSH port.
+        </div>
+
+        <div className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+          <p><strong>Container:</strong> {container.name}</p>
+          <p><strong>Image:</strong> {container.image}</p>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Name */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Container Name
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-agent-env"
-              required
-              pattern="^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-            />
-          </div>
-
-          {/* Image */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Image
-            </label>
-            <select
-              value={selectedImage}
-              onChange={(e) => setImage(e.target.value)}
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-            >
-              {images && images.length > 0 && (
-                <optgroup label="Built Images (ready to use)">
-                  {images
-                    .flatMap((i) => i.repoTags)
-                    .filter((tag) => tag && tag !== '<none>:<none>')
-                    .map((tag) => (
-                      <option key={tag} value={tag}>
-                        {tag}
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-              <optgroup label="Base Images (will build with SSH setup)">
-                {commonImages.map((img) => (
-                  <option key={img} value={img}>
-                    {img}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Built images launch instantly. Base images require a one-time build.
-            </p>
-          </div>
-
           {/* Volumes */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Attach Volumes (mounted to /workspace)
+              Volumes (mounted to /workspace)
             </label>
 
             {volumes && volumes.length > 0 ? (
@@ -170,7 +117,7 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
               </div>
             ) : (
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                No volumes available. Create one first.
+                No volumes available.
               </p>
             )}
           </div>
@@ -178,7 +125,7 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
           {/* Port Mapping */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Port Mapping (for web apps, APIs, etc.)
+              Port Mapping
             </label>
 
             {ports.length > 0 && (
@@ -233,14 +180,14 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
               </button>
             </div>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              SSH port (22) is automatically mapped
+              SSH port (22) is automatically mapped to a new random port
             </p>
           </div>
 
           {/* Error message */}
-          {createMutation.error && (
+          {reconfigureMutation.error && (
             <div className="rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
-              {createMutation.error.message}
+              {reconfigureMutation.error.message}
             </div>
           )}
 
@@ -255,13 +202,13 @@ export function CreateContainerForm({ onClose }: CreateContainerFormProps) {
             </button>
             <button
               type="submit"
-              disabled={createMutation.isPending || !name}
+              disabled={reconfigureMutation.isPending}
               className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {createMutation.isPending && (
+              {reconfigureMutation.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
-              Create Container
+              Reconfigure
             </button>
           </div>
         </form>

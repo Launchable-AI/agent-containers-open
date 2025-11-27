@@ -1,15 +1,17 @@
 import { execSync } from 'child_process';
-import { mkdir, writeFile, readFile, rm } from 'fs/promises';
+import { mkdir, readFile, rm, access } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import * as dockerService from './docker.js';
 import { findAvailableSshPort } from '../utils/port.js';
 import type { CreateContainerRequest, ContainerInfo } from '../types/index.js';
 
+const ACM_LABEL = 'agent-container-management';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..', '..', '..', '..');
 const SSH_KEYS_DIR = join(PROJECT_ROOT, 'data', 'ssh-keys');
-const TEMPLATES_DIR = join(__dirname, '..', '..', 'templates');
+const APP_KEY_NAME = 'acm'; // Single app-wide SSH key
 
 export interface ContainerBuildResult {
   container: ContainerInfo;
@@ -19,23 +21,32 @@ export interface ContainerBuildResult {
 export async function buildAndCreateContainer(request: CreateContainerRequest): Promise<ContainerBuildResult> {
   const { name, image, dockerfile, volumes, ports, env } = request;
 
-  // Generate SSH keypair using ssh-keygen (creates the private key file directly)
-  const { publicKey } = await generateSshKeyPair(name);
-  const privateKeyPath = join(SSH_KEYS_DIR, `${name}.pem`);
+  // Get or create the app-wide SSH key
+  const { publicKey } = await getOrCreateAppSshKey();
+  const privateKeyPath = join(SSH_KEYS_DIR, `${APP_KEY_NAME}.pem`);
 
   // Determine which image to use
   let imageName: string;
 
   if (dockerfile) {
-    // Build custom image with SSH support
+    // Build from user's dockerfile with SSH key baked in
     imageName = `acm-${name}:latest`;
-    const dockerfileWithSsh = injectSshIntoDockerfile(dockerfile, publicKey);
-    await dockerService.buildImage(dockerfileWithSsh, imageName);
+    const dockerfileWithKey = injectPublicKey(dockerfile, publicKey);
+    await dockerService.buildImage(dockerfileWithKey, imageName);
   } else if (image) {
-    // Build base image with SSH
-    imageName = `acm-${name}:latest`;
-    const baseDockerfile = await createSshDockerfile(image, publicKey);
-    await dockerService.buildImage(baseDockerfile, imageName);
+    // Check if this image is already ACM-ready (has our label)
+    const isAcmImage = await dockerService.imageHasLabel(image, ACM_LABEL);
+
+    if (isAcmImage) {
+      // Image already has SSH setup - use it directly
+      // Note: If SSH fails, user should rebuild the image to get current key
+      imageName = image;
+    } else {
+      // Base image needs SSH setup - build a new image with key baked in
+      imageName = `acm-${name}:latest`;
+      const baseDockerfile = createSshDockerfile(image, publicKey);
+      await dockerService.buildImage(baseDockerfile, imageName);
+    }
   } else {
     throw new Error('Either image or dockerfile must be provided');
   }
@@ -68,36 +79,47 @@ export async function buildAndCreateContainer(request: CreateContainerRequest): 
   };
 }
 
-export async function getPrivateKeyPath(containerName: string): Promise<string> {
-  return join(SSH_KEYS_DIR, `${containerName}.pem`);
+// Inject SSH public key into Dockerfile (replaces {{PUBLIC_KEY}} placeholder)
+function injectPublicKey(dockerfile: string, publicKey: string): string {
+  return dockerfile.replace(/\{\{PUBLIC_KEY\}\}/g, publicKey);
 }
 
-export async function getPrivateKey(containerName: string): Promise<string> {
-  const keyPath = await getPrivateKeyPath(containerName);
+export async function getPrivateKeyPath(): Promise<string> {
+  return join(SSH_KEYS_DIR, `${APP_KEY_NAME}.pem`);
+}
+
+export async function getPrivateKey(): Promise<string> {
+  const keyPath = await getPrivateKeyPath();
   return readFile(keyPath, 'utf-8');
 }
 
-export async function cleanupContainerKeys(containerName: string): Promise<void> {
-  const keyPath = join(SSH_KEYS_DIR, `${containerName}.pem`);
-  try {
-    await rm(keyPath);
-  } catch {
-    // Ignore if file doesn't exist
-  }
+export async function getPublicKey(): Promise<string> {
+  const { publicKey } = await getOrCreateAppSshKey();
+  return publicKey;
 }
 
-async function generateSshKeyPair(name: string): Promise<{ publicKey: string; privateKey: string }> {
+async function getOrCreateAppSshKey(): Promise<{ publicKey: string; privateKey: string }> {
   await mkdir(SSH_KEYS_DIR, { recursive: true });
 
-  const privateKeyPath = join(SSH_KEYS_DIR, `${name}.pem`);
-  const publicKeyPath = join(SSH_KEYS_DIR, `${name}.pem.pub`);
+  const privateKeyPath = join(SSH_KEYS_DIR, `${APP_KEY_NAME}.pem`);
+  const publicKeyPath = join(SSH_KEYS_DIR, `${APP_KEY_NAME}.pem.pub`);
 
-  // Remove existing keys if present
-  try { await rm(privateKeyPath); } catch { /* ignore */ }
-  try { await rm(publicKeyPath); } catch { /* ignore */ }
+  // Check if key already exists
+  try {
+    await access(privateKeyPath);
+    // Key exists, read and return it
+    const privateKey = await readFile(privateKeyPath, 'utf-8');
+    // Regenerate public key from private key if needed
+    execSync(`ssh-keygen -y -f "${privateKeyPath}" > "${publicKeyPath}"`, { stdio: 'pipe' });
+    const publicKey = await readFile(publicKeyPath, 'utf-8');
+    await rm(publicKeyPath);
+    return { publicKey: publicKey.trim(), privateKey };
+  } catch {
+    // Key doesn't exist, generate new one
+  }
 
   // Generate key pair using ssh-keygen
-  execSync(`ssh-keygen -t rsa -b 4096 -f "${privateKeyPath}" -N "" -C "agent-container-${name}"`, {
+  execSync(`ssh-keygen -t rsa -b 4096 -f "${privateKeyPath}" -N "" -C "agent-container-management"`, {
     stdio: 'pipe',
   });
 
@@ -111,9 +133,11 @@ async function generateSshKeyPair(name: string): Promise<{ publicKey: string; pr
   return { publicKey: publicKey.trim(), privateKey };
 }
 
-async function createSshDockerfile(baseImage: string, publicKey: string): Promise<string> {
+// Generate a complete Dockerfile when user only provides a base image
+function createSshDockerfile(baseImage: string, publicKey: string): string {
   return `FROM ${baseImage}
 
+# Install packages
 RUN apt-get update && apt-get install -y \\
     openssh-server \\
     sudo \\
@@ -121,48 +145,31 @@ RUN apt-get update && apt-get install -y \\
     git \\
     vim \\
     && rm -rf /var/lib/apt/lists/* \\
-    && mkdir -p /var/run/sshd /root/.ssh \\
-    && chmod 700 /root/.ssh \\
-    && sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \\
-    && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+    && mkdir -p /var/run/sshd
 
-RUN echo '${publicKey}' > /root/.ssh/authorized_keys \\
-    && chmod 600 /root/.ssh/authorized_keys
+# Create non-root user with sudo access
+RUN useradd -m -s /bin/bash dev \\
+    && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Configure SSH for key-based auth
+RUN sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \\
+    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# Setup SSH key
+RUN mkdir -p /home/dev/.ssh \\
+    && chmod 700 /home/dev/.ssh \\
+    && echo '${publicKey}' > /home/dev/.ssh/authorized_keys \\
+    && chmod 600 /home/dev/.ssh/authorized_keys \\
+    && chown -R dev:dev /home/dev/.ssh
+
+# Add ~/.local/bin to PATH for pip-installed tools
+RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/dev/.bashrc
+
+# Set working directory
+WORKDIR /workspace
+RUN chown dev:dev /workspace
 
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D"]
 `;
-}
-
-function injectSshIntoDockerfile(dockerfile: string, publicKey: string): string {
-  // Check if dockerfile already has SSH setup
-  if (dockerfile.includes('openssh-server')) {
-    // Just add the authorized_keys
-    return dockerfile + `
-RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
-RUN echo '${publicKey}' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
-`;
-  }
-
-  // Add full SSH setup
-  const sshSetup = `
-RUN apt-get update && apt-get install -y openssh-server \\
-    && mkdir -p /var/run/sshd /root/.ssh \\
-    && chmod 700 /root/.ssh \\
-    && sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \\
-    && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN echo '${publicKey}' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
-
-EXPOSE 22
-`;
-
-  // Replace CMD with sshd
-  let modifiedDockerfile = dockerfile;
-
-  // Remove existing CMD or ENTRYPOINT
-  modifiedDockerfile = modifiedDockerfile.replace(/^(CMD|ENTRYPOINT).*$/gm, '');
-
-  return modifiedDockerfile + sshSetup + '\nCMD ["/usr/sbin/sshd", "-D"]\n';
 }

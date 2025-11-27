@@ -60,6 +60,18 @@ export function useRemoveContainer() {
   });
 }
 
+export function useReconfigureContainer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, ...request }: { id: string } & api.ReconfigureContainerRequest) =>
+      api.reconfigureContainer(id, request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['containers'] });
+    },
+  });
+}
+
 export function useImages() {
   return useQuery({
     queryKey: ['images'],

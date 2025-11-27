@@ -5,6 +5,7 @@ import { getConfig } from './config.js';
 const docker = new Docker();
 
 const CONTAINER_LABEL = 'agent-container-management';
+const IMAGE_LABEL = 'agent-container-management';
 
 export async function listContainers(): Promise<ContainerInfo[]> {
   const containers = await docker.listContainers({
@@ -115,7 +116,9 @@ export async function removeContainer(id: string): Promise<void> {
 }
 
 export async function listImages(): Promise<ImageInfo[]> {
-  const images = await docker.listImages();
+  const images = await docker.listImages({
+    filters: { label: [IMAGE_LABEL] },
+  });
   return images.map((img) => ({
     id: img.Id,
     repoTags: img.RepoTags || [],
@@ -139,11 +142,27 @@ export async function pullImage(imageName: string): Promise<void> {
   });
 }
 
+export async function removeImage(id: string): Promise<void> {
+  const image = docker.getImage(id);
+  await image.remove({ force: true });
+}
+
+export async function imageHasLabel(imageName: string, label: string): Promise<boolean> {
+  try {
+    const image = docker.getImage(imageName);
+    const info = await image.inspect();
+    return info.Config?.Labels?.[label] === 'true';
+  } catch {
+    // Image doesn't exist or can't be inspected
+    return false;
+  }
+}
+
 export async function buildImage(dockerfile: string, tag: string): Promise<void> {
   const tar = await createTarFromDockerfile(dockerfile);
 
   return new Promise((resolve, reject) => {
-    docker.buildImage(tar, { t: tag }, (err, stream) => {
+    docker.buildImage(tar, { t: tag, labels: { [IMAGE_LABEL]: 'true' }, rm: true }, (err, stream) => {
       if (err) {
         reject(err);
         return;
@@ -152,9 +171,31 @@ export async function buildImage(dockerfile: string, tag: string): Promise<void>
         reject(new Error('No stream returned from buildImage'));
         return;
       }
+
+      let buildError: string | null = null;
+
+      stream.on('data', (chunk: Buffer) => {
+        try {
+          const lines = chunk.toString().split('\n').filter(Boolean);
+          for (const line of lines) {
+            const json = JSON.parse(line);
+            if (json.error) {
+              buildError = json.error;
+            }
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      });
+
       docker.modem.followProgress(stream, (err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+        } else if (buildError) {
+          reject(new Error(buildError));
+        } else {
+          resolve();
+        }
       });
     });
   });
@@ -168,7 +209,7 @@ export async function buildImageWithLogs(
   const tar = await createTarFromDockerfile(dockerfile);
 
   return new Promise((resolve, reject) => {
-    docker.buildImage(tar, { t: tag }, (err, stream) => {
+    docker.buildImage(tar, { t: tag, labels: { [IMAGE_LABEL]: 'true' }, rm: true }, (err, stream) => {
       if (err) {
         reject(err);
         return;
@@ -178,6 +219,8 @@ export async function buildImageWithLogs(
         return;
       }
 
+      let buildError: string | null = null;
+
       stream.on('data', (chunk: Buffer) => {
         try {
           const lines = chunk.toString().split('\n').filter(Boolean);
@@ -186,6 +229,7 @@ export async function buildImageWithLogs(
             if (json.stream) {
               onLog(json.stream);
             } else if (json.error) {
+              buildError = json.error;
               onLog(`ERROR: ${json.error}`);
             } else if (json.status) {
               onLog(`${json.status}${json.progress ? ` ${json.progress}` : ''}`);
@@ -197,8 +241,13 @@ export async function buildImageWithLogs(
       });
 
       docker.modem.followProgress(stream, (err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+        } else if (buildError) {
+          reject(new Error(buildError));
+        } else {
+          resolve();
+        }
       });
     });
   });
@@ -364,29 +413,40 @@ function extractVolumesFromInspect(mounts: Array<{ Type: string; Name?: string; 
 }
 
 function extractPorts(ports: Docker.Port[]): Array<{ container: number; host: number }> {
-  return ports
-    .filter((p) => p.PublicPort && p.PrivatePort !== 22) // Exclude SSH port
-    .map((p) => ({
-      container: p.PrivatePort,
-      host: p.PublicPort!,
-    }));
-}
+  const portMap = new Map<string, { container: number; host: number }>();
 
-function extractPortsFromInspect(ports: Record<string, Array<{ HostPort: string }> | null>): Array<{ container: number; host: number }> {
-  const result: Array<{ container: number; host: number }> = [];
+  for (const p of ports) {
+    if (!p.PublicPort || p.PrivatePort === 22) continue; // Exclude SSH port
 
-  for (const [key, bindings] of Object.entries(ports)) {
-    if (!bindings || key === '22/tcp') continue; // Skip SSH port
-
-    const containerPort = parseInt(key.split('/')[0], 10);
-    const hostPort = parseInt(bindings[0]?.HostPort, 10);
-
-    if (containerPort && hostPort) {
-      result.push({ container: containerPort, host: hostPort });
+    const key = `${p.PublicPort}-${p.PrivatePort}`;
+    if (!portMap.has(key)) {
+      portMap.set(key, { container: p.PrivatePort, host: p.PublicPort });
     }
   }
 
-  return result;
+  return Array.from(portMap.values());
+}
+
+function extractPortsFromInspect(ports: Record<string, Array<{ HostPort: string }> | null>): Array<{ container: number; host: number }> {
+  const portMap = new Map<string, { container: number; host: number }>();
+
+  for (const [key, bindings] of Object.entries(ports)) {
+    if (!bindings) continue;
+
+    const containerPort = parseInt(key.split('/')[0], 10);
+    if (containerPort === 22) continue; // Skip SSH port
+
+    const hostPort = parseInt(bindings[0]?.HostPort, 10);
+
+    if (containerPort && hostPort) {
+      const mapKey = `${hostPort}-${containerPort}`;
+      if (!portMap.has(mapKey)) {
+        portMap.set(mapKey, { container: containerPort, host: hostPort });
+      }
+    }
+  }
+
+  return Array.from(portMap.values());
 }
 
 function mapState(state: string): ContainerInfo['state'] {

@@ -37,4 +37,19 @@ images.post('/build', zValidator('json', BuildImageSchema), async (c) => {
   }
 });
 
+// Delete image
+images.delete('/:id', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    console.log(`Deleting image: ${id}`);
+    await dockerService.removeImage(id);
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete image:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: message }, 500);
+  }
+});
+
 export default images;

@@ -23,7 +23,7 @@ export interface ContainerInfo {
   name: string;
   image: string;
   status: string;
-  state: 'running' | 'stopped' | 'created' | 'exited' | 'paused';
+  state: 'running' | 'stopped' | 'created' | 'exited' | 'paused' | 'building' | 'failed';
   sshPort: number | null;
   sshCommand: string | null;
   volumes: Array<{ name: string; mountPath: string }>;
@@ -70,3 +70,16 @@ export const BuildImageSchema = z.object({
 });
 
 export type BuildImageRequest = z.infer<typeof BuildImageSchema>;
+
+export const ReconfigureContainerSchema = z.object({
+  volumes: z.array(z.object({
+    name: z.string(),
+    mountPath: z.string(),
+  })).optional(),
+  ports: z.array(z.object({
+    container: z.number().min(1).max(65535),
+    host: z.number().min(1).max(65535),
+  })).optional(),
+});
+
+export type ReconfigureContainerRequest = z.infer<typeof ReconfigureContainerSchema>;

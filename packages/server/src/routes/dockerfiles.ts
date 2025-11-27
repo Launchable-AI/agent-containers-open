@@ -6,6 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SaveDockerfileSchema } from '../types/index.js';
 import * as dockerService from '../services/docker.js';
+import { getPublicKey } from '../services/container-builder.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..', '..', '..', '..');
@@ -99,6 +100,10 @@ dockerfiles.post('/:name/build', async (c) => {
     const content = await readFile(filePath, 'utf-8');
     const tag = `acm-${name}:latest`;
 
+    // Inject SSH public key (replaces {{PUBLIC_KEY}} placeholder)
+    const publicKey = await getPublicKey();
+    const dockerfileWithKey = content.replace(/\{\{PUBLIC_KEY\}\}/g, publicKey);
+
     // Set up SSE headers
     c.header('Content-Type', 'text/event-stream');
     c.header('Cache-Control', 'no-cache');
@@ -113,7 +118,7 @@ dockerfiles.post('/:name/build', async (c) => {
         };
 
         try {
-          await dockerService.buildImageWithLogs(content, tag, (log) => {
+          await dockerService.buildImageWithLogs(dockerfileWithKey, tag, (log) => {
             sendEvent('log', log);
           });
           sendEvent('done', tag);

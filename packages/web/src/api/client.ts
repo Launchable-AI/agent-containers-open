@@ -47,7 +47,7 @@ export interface ContainerInfo {
   name: string;
   image: string;
   status: string;
-  state: 'running' | 'stopped' | 'created' | 'exited' | 'paused';
+  state: 'running' | 'stopped' | 'created' | 'exited' | 'paused' | 'building' | 'failed';
   sshPort: number | null;
   sshCommand: string | null;
   volumes: Array<{ name: string; mountPath: string }>;
@@ -107,9 +107,9 @@ export async function getContainer(id: string): Promise<ContainerInfo> {
 }
 
 export async function createContainer(request: CreateContainerRequest): Promise<{
-  container: ContainerInfo;
-  sshKeyPath: string;
-  sshCommand: string;
+  buildId: string;
+  status: 'building';
+  message: string;
 }> {
   return fetchAPI('/containers', {
     method: 'POST',
@@ -127,6 +127,18 @@ export async function stopContainer(id: string): Promise<void> {
 
 export async function removeContainer(id: string): Promise<void> {
   await fetchAPI(`/containers/${id}`, { method: 'DELETE' });
+}
+
+export interface ReconfigureContainerRequest {
+  volumes?: Array<{ name: string; mountPath: string }>;
+  ports?: Array<{ container: number; host: number }>;
+}
+
+export async function reconfigureContainer(id: string, request: ReconfigureContainerRequest): Promise<ContainerInfo> {
+  return fetchAPI(`/containers/${id}/reconfigure`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
 }
 
 export async function downloadSshKey(id: string): Promise<Blob> {
@@ -148,6 +160,10 @@ export async function pullImage(image: string): Promise<void> {
     method: 'POST',
     body: JSON.stringify({ image }),
   });
+}
+
+export async function removeImage(id: string): Promise<void> {
+  await fetchAPI(`/images/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 // Volumes

@@ -4,10 +4,11 @@ import { ContainerList } from './components/ContainerList';
 import { CreateContainerForm } from './components/CreateContainerForm';
 import { VolumeManager } from './components/VolumeManager';
 import { DockerfileEditor } from './components/DockerfileEditor';
+import { ImageList } from './components/ImageList';
 import { SettingsModal } from './components/SettingsModal';
 import { useHealth } from './hooks/useContainers';
 
-type Tab = 'containers' | 'dockerfiles';
+type Tab = 'containers' | 'dockerfiles' | 'images';
 
 function App() {
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -95,6 +96,16 @@ function App() {
             >
               Dockerfiles
             </button>
+            <button
+              onClick={() => setActiveTab('images')}
+              className={`border-b-2 pb-2 text-sm font-medium transition-colors ${
+                activeTab === 'images'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
+              }`}
+            >
+              Images
+            </button>
           </nav>
         </div>
       </header>
@@ -106,6 +117,7 @@ function App() {
           <div className="lg:col-span-2">
             {activeTab === 'containers' && <ContainerList />}
             {activeTab === 'dockerfiles' && <DockerfileEditor />}
+            {activeTab === 'images' && <ImageList />}
           </div>
 
           {/* Sidebar */}

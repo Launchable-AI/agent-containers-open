@@ -9,6 +9,7 @@ import {
   Download,
   HardDrive,
   Globe,
+  Settings,
 } from 'lucide-react';
 import type { ContainerInfo } from '../api/client';
 import { downloadSshKey } from '../api/client';
@@ -18,6 +19,7 @@ import {
   useRemoveContainer,
   useConfig,
 } from '../hooks/useContainers';
+import { ReconfigureModal } from './ReconfigureModal';
 
 interface ContainerCardProps {
   container: ContainerInfo;
@@ -25,6 +27,7 @@ interface ContainerCardProps {
 
 export function ContainerCard({ container }: ContainerCardProps) {
   const [copied, setCopied] = useState(false);
+  const [showReconfigure, setShowReconfigure] = useState(false);
   const startMutation = useStartContainer();
   const stopMutation = useStopContainer();
   const removeMutation = useRemoveContainer();
@@ -32,11 +35,13 @@ export function ContainerCard({ container }: ContainerCardProps) {
 
   const sshKeysPath = config?.sshKeysDisplayPath || '~/.ssh';
   const isRunning = container.state === 'running';
+  const isBuilding = container.state === 'building';
+  const isFailed = container.state === 'failed';
   const isPending =
     startMutation.isPending || stopMutation.isPending || removeMutation.isPending;
 
   const sshCommand = container.sshPort
-    ? `ssh -i ${sshKeysPath}/${container.name}.pem -p ${container.sshPort} root@localhost`
+    ? `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${sshKeysPath}/acm.pem -p ${container.sshPort} dev@localhost`
     : null;
 
   const handleCopyCommand = async () => {
@@ -53,7 +58,7 @@ export function ContainerCard({ container }: ContainerCardProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${container.name}.pem`;
+      a.download = 'acm.pem';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -69,6 +74,8 @@ export function ContainerCard({ container }: ContainerCardProps) {
     created: 'bg-yellow-500',
     paused: 'bg-orange-500',
     stopped: 'bg-gray-500',
+    building: 'bg-blue-500 animate-pulse',
+    failed: 'bg-red-600',
   };
 
   return (
@@ -89,39 +96,53 @@ export function ContainerCard({ container }: ContainerCardProps) {
           </div>
         </div>
 
-        <div className="flex gap-1">
-          {isRunning ? (
-            <button
-              onClick={() => stopMutation.mutate(container.id)}
-              disabled={isPending}
-              className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-orange-600 disabled:opacity-50 dark:hover:bg-gray-700"
-              title="Stop"
-            >
-              <Square className="h-4 w-4" />
-            </button>
-          ) : (
-            <button
-              onClick={() => startMutation.mutate(container.id)}
-              disabled={isPending}
-              className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-green-600 disabled:opacity-50 dark:hover:bg-gray-700"
-              title="Start"
-            >
-              <Play className="h-4 w-4" />
-            </button>
-          )}
-          <button
-            onClick={() => {
-              if (confirm(`Delete container "${container.name}"?`)) {
-                removeMutation.mutate(container.id);
-              }
-            }}
-            disabled={isPending}
-            className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50 dark:hover:bg-gray-700"
-            title="Remove"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
+        {!isBuilding && (
+          <div className="flex gap-1">
+            {isRunning ? (
+              <button
+                onClick={() => stopMutation.mutate(container.id)}
+                disabled={isPending}
+                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-orange-600 disabled:opacity-50 dark:hover:bg-gray-700"
+                title="Stop"
+              >
+                <Square className="h-4 w-4" />
+              </button>
+            ) : !isFailed && (
+              <button
+                onClick={() => startMutation.mutate(container.id)}
+                disabled={isPending}
+                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-green-600 disabled:opacity-50 dark:hover:bg-gray-700"
+                title="Start"
+              >
+                <Play className="h-4 w-4" />
+              </button>
+            )}
+            {!isFailed && (
+              <button
+                onClick={() => setShowReconfigure(true)}
+                disabled={isPending}
+                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600 disabled:opacity-50 dark:hover:bg-gray-700"
+                title="Reconfigure ports/volumes"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            )}
+            {!isFailed && (
+              <button
+                onClick={() => {
+                  if (confirm(`Delete container "${container.name}"?`)) {
+                    removeMutation.mutate(container.id);
+                  }
+                }}
+                disabled={isPending}
+                className="rounded p-2 text-gray-500 hover:bg-gray-100 hover:text-red-600 disabled:opacity-50 dark:hover:bg-gray-700"
+                title="Remove"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* SSH Connection */}
@@ -212,6 +233,14 @@ export function ContainerCard({ container }: ContainerCardProps) {
       <div className="mt-4 text-xs text-gray-400">
         {container.status}
       </div>
+
+      {/* Reconfigure Modal */}
+      {showReconfigure && (
+        <ReconfigureModal
+          container={container}
+          onClose={() => setShowReconfigure(false)}
+        />
+      )}
     </div>
   );
 }
