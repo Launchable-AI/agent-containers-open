@@ -203,6 +203,31 @@ export async function uploadFileToVolume(volumeName: string, file: File): Promis
   }
 }
 
+export async function uploadDirectoryToVolume(
+  volumeName: string,
+  files: Array<{ file: File; relativePath: string }>
+): Promise<void> {
+  const serverUrl = await discoverServer();
+  const formData = new FormData();
+
+  // Append each file with its relative path as metadata
+  for (let i = 0; i < files.length; i++) {
+    const { file, relativePath } = files[i];
+    formData.append('files', file);
+    formData.append('paths', relativePath);
+  }
+
+  const response = await fetch(`${serverUrl}/api/volumes/${volumeName}/upload-directory`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+    throw new Error(error.error || 'Upload failed');
+  }
+}
+
 // Dockerfiles
 export async function listDockerfiles(): Promise<string[]> {
   return fetchAPI('/dockerfiles');

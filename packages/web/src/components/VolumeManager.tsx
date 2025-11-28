@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef } from 'react';
-import { Plus, Trash2, Loader2, HardDrive, Box, Upload } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { Plus, Trash2, Loader2, HardDrive, Box, Upload, File, Folder } from 'lucide-react';
 import { useVolumes, useCreateVolume, useRemoveVolume, useContainers } from '../hooks/useContainers';
 import * as api from '../api/client';
 
@@ -8,9 +8,12 @@ export function VolumeManager() {
   const [isCreating, setIsCreating] = useState(false);
   const [uploadingVolume, setUploadingVolume] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<{ volume: string; type: 'success' | 'error'; text: string } | null>(null);
+  const [showUploadMenu, setShowUploadMenu] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const uploadMenuRef = useRef<HTMLDivElement>(null);
 
-  const { data: volumes, isLoading, refetch } = useVolumes();
+  const { data: volumes, isLoading } = useVolumes();
   const { data: containers } = useContainers();
   const createMutation = useCreateVolume();
   const removeMutation = useRemoveVolume();
@@ -32,6 +35,20 @@ export function VolumeManager() {
     return usage;
   }, [containers]);
 
+  // Close upload menu when clicking outside
+  useEffect(() => {
+    if (!showUploadMenu) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (uploadMenuRef.current && !uploadMenuRef.current.contains(event.target as Node)) {
+        setShowUploadMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showUploadMenu]);
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newVolumeName) return;
@@ -46,8 +63,19 @@ export function VolumeManager() {
   };
 
   const handleUploadClick = (volumeName: string) => {
+    setShowUploadMenu(showUploadMenu === volumeName ? null : volumeName);
+  };
+
+  const handleFileUploadClick = (volumeName: string) => {
     setUploadingVolume(volumeName);
+    setShowUploadMenu(null);
     fileInputRef.current?.click();
+  };
+
+  const handleFolderUploadClick = (volumeName: string) => {
+    setUploadingVolume(volumeName);
+    setShowUploadMenu(null);
+    folderInputRef.current?.click();
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -69,6 +97,41 @@ export function VolumeManager() {
     }
   };
 
+  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !uploadingVolume) return;
+
+    try {
+      // Convert FileList to array with relative paths
+      const fileArray: Array<{ file: globalThis.File; relativePath: string }> = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        // webkitRelativePath contains the full path including the folder name
+        const relativePath = file.webkitRelativePath || file.name;
+        fileArray.push({ file, relativePath });
+      }
+
+      await api.uploadDirectoryToVolume(uploadingVolume, fileArray);
+
+      // Get the folder name from the first file's path
+      const folderName = fileArray[0]?.relativePath.split('/')[0] || 'folder';
+      setUploadMessage({
+        volume: uploadingVolume,
+        type: 'success',
+        text: `Uploaded: ${folderName}/ (${fileArray.length} files)`
+      });
+      setTimeout(() => setUploadMessage(null), 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      setUploadMessage({ volume: uploadingVolume, type: 'error', text: message });
+    } finally {
+      setUploadingVolume(null);
+      if (folderInputRef.current) {
+        folderInputRef.current.value = '';
+      }
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -85,6 +148,14 @@ export function VolumeManager() {
         type="file"
         className="hidden"
         onChange={handleFileSelect}
+      />
+      {/* Hidden folder input */}
+      <input
+        ref={folderInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFolderSelect}
+        {...{ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>}
       />
 
       <div className="flex items-center justify-between mb-4">
@@ -154,18 +225,38 @@ export function VolumeManager() {
                     </p>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => handleUploadClick(volume.name)}
-                      disabled={uploadingVolume === volume.name}
-                      className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-blue-600 dark:hover:bg-gray-600"
-                      title="Upload file to volume"
-                    >
-                      {uploadingVolume === volume.name ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Upload className="h-4 w-4" />
+                    <div className="relative" ref={showUploadMenu === volume.name ? uploadMenuRef : undefined}>
+                      <button
+                        onClick={() => handleUploadClick(volume.name)}
+                        disabled={uploadingVolume === volume.name}
+                        className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-blue-600 dark:hover:bg-gray-600"
+                        title="Upload to volume"
+                      >
+                        {uploadingVolume === volume.name ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Upload className="h-4 w-4" />
+                        )}
+                      </button>
+                      {showUploadMenu === volume.name && (
+                        <div className="absolute right-0 top-full mt-1 z-10 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-md shadow-lg py-1 min-w-[140px]">
+                          <button
+                            onClick={() => handleFileUploadClick(volume.name)}
+                            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                          >
+                            <File className="h-4 w-4" />
+                            Upload File
+                          </button>
+                          <button
+                            onClick={() => handleFolderUploadClick(volume.name)}
+                            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                          >
+                            <Folder className="h-4 w-4" />
+                            Upload Folder
+                          </button>
+                        </div>
                       )}
-                    </button>
+                    </div>
                     <button
                       onClick={() => {
                         const msg = isInUse

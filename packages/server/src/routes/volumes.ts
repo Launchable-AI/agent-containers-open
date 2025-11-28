@@ -74,4 +74,45 @@ volumes.post('/:name/upload', async (c) => {
   }
 });
 
+// Upload directory to volume
+volumes.post('/:name/upload-directory', async (c) => {
+  const volumeName = c.req.param('name');
+
+  try {
+    const formData = await c.req.formData();
+    const files = formData.getAll('files');
+    const paths = formData.getAll('paths');
+
+    if (!files || files.length === 0) {
+      return c.json({ error: 'No files provided' }, 400);
+    }
+
+    if (files.length !== paths.length) {
+      return c.json({ error: 'Mismatched files and paths count' }, 400);
+    }
+
+    let uploadedCount = 0;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const relativePath = paths[i];
+
+      if (!(file instanceof File) || typeof relativePath !== 'string') {
+        continue;
+      }
+
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      // Use the relative path to preserve directory structure
+      await dockerService.uploadFileToVolume(volumeName, relativePath, buffer);
+      uploadedCount++;
+    }
+
+    return c.json({ success: true, filesUploaded: uploadedCount });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: message }, 500);
+  }
+});
+
 export default volumes;
