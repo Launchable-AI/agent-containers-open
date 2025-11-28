@@ -42,7 +42,7 @@ export function ContainerCard({ container }: ContainerCardProps) {
     startMutation.isPending || stopMutation.isPending || removeMutation.isPending;
 
   const sshCommand = container.sshPort
-    ? `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${sshKeysPath}/acm.pem -p ${container.sshPort} dev@localhost`
+    ? `ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i ${sshKeysPath}/acm.pem -p ${container.sshPort} dev@localhost`
     : null;
 
   const handleCopyCommand = async () => {
